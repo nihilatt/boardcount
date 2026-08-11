@@ -238,6 +238,37 @@
   .setup-card h2{font-family:var(--font-display);font-size:19px;margin:0 0 12px;}
   .setup-card p{color:var(--ink-dim);font-size:14px;line-height:1.6;margin:0 0 10px;}
   .setup-card code{background:var(--panel-2);padding:2px 6px;border-radius:5px;font-family:var(--font-mono);font-size:13px;color:var(--gold);}
+
+  /* ---------- Bombastic overtake taunt popup ---------- */
+  .taunt-overlay{
+    position:fixed;inset:0;z-index:95;display:flex;align-items:center;justify-content:center;
+    pointer-events:none;padding:24px;
+  }
+  .taunt-card{
+    position:relative;background:rgba(10,10,16,.6);
+    backdrop-filter:blur(9px);-webkit-backdrop-filter:blur(9px);
+    border-radius:22px;padding:28px 32px;max-width:90vw;
+    transform:rotate(var(--rot,-6deg)) scale(.25);filter:blur(18px);opacity:0;
+    animation:taunt-pop 2.5s cubic-bezier(.18,1.55,.35,1) forwards;
+  }
+  .taunt-card::before{
+    content:'';position:absolute;inset:-50px;z-index:-1;border-radius:50%;
+    background:radial-gradient(circle, rgba(255,184,0,.35) 0%, rgba(255,184,0,0) 70%);
+  }
+  .taunt-text{
+    font-family:var(--font-display);font-weight:700;
+    font-size:clamp(24px,7.5vw,40px);line-height:1.18;text-align:center;
+    color:#ffb800;letter-spacing:.3px;
+    -webkit-text-stroke:1.5px #0a0a0e;
+    text-shadow:2px 2px 0 #0a0a0e,-2px -2px 0 #0a0a0e,2px -2px 0 #0a0a0e,-2px 2px 0 #0a0a0e,0 10px 26px rgba(0,0,0,.6);
+  }
+  @keyframes taunt-pop{
+    0%{opacity:0;transform:rotate(var(--rot)) scale(.25);filter:blur(22px);}
+    14%{opacity:1;transform:rotate(calc(var(--rot) * .6)) scale(1.18);filter:blur(0);}
+    24%{transform:rotate(calc(var(--rot) * .5)) scale(1);}
+    80%{opacity:1;transform:rotate(calc(var(--rot) * .5)) scale(1);filter:blur(0);}
+    100%{opacity:0;transform:rotate(calc(var(--rot) * .3)) scale(.85);filter:blur(10px);}
+  }
 </style>
 </head>
 <body>
@@ -307,6 +338,28 @@
     return s;
   }
 
+  const TAUNTS = [
+    'Seber si drobné a jdi domů. 💸',
+    'Tohle bylo trapné i pro tebe. 😬',
+    'Možná zkus jinou hru. 🎯',
+    'Zrovna jsi mi otevřel(a) dveře. Díky! 🚪',
+    'Sorry, ale tohle byl masakr. 🔪',
+    'Koukej se učit z mistra. 👑',
+    'Tenhle kolaps si nikdo nezasloužil víc než ty. 💥',
+    'Padáš rychleji než akcie. 📉',
+    'Gratuluju k místu v mém stínu. 🕶️',
+    'Tohle tempo tě nikam nedostane. 🐌',
+    'Škoda že body nejdou vrátit. 🗑️',
+    'Tvoje jméno teď znamená "poražený". 😤',
+    'Táhni domů! 🚪',
+    'Sedíš si na prstech nebo na mozku? 🤔',
+    'Měl jsi si dát radši pivo. 🍺',
+    'Zalez pod stůl! 🫣',
+  ];
+  let prevAheadSet = null;
+  let toastQueue = [];
+  let toastShowing = false;
+
   /* ================= State ================= */
   const S = {
     screen: 'loading',
@@ -334,6 +387,43 @@
   }
   function escapeHtml(str){
     return String(str).replace(/[&<>"']/g, c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+  }
+
+  /* ================= ICQ-style overtake taunts ================= */
+  function checkOvertakes(){
+    const me = myPlayer();
+    if(!me || S.players.length < 2){ prevAheadSet = null; return; }
+    const currentlyAhead = new Set();
+    for(const p of S.players){
+      if(p.id === me.id) continue;
+      if(me.score > p.score) currentlyAhead.add(p.id);
+    }
+    if(prevAheadSet === null){
+      prevAheadSet = currentlyAhead;
+      return;
+    }
+    const newlyOvertaken = [...currentlyAhead].filter(id => !prevAheadSet.has(id));
+    prevAheadSet = currentlyAhead;
+    if(newlyOvertaken.length) showTaunt();
+  }
+
+  function showTaunt(){
+    toastQueue.push(true);
+    if(!toastShowing) drainTauntQueue();
+  }
+
+  function drainTauntQueue(){
+    if(!toastQueue.length){ toastShowing = false; return; }
+    toastShowing = true;
+    toastQueue.shift();
+    const text = TAUNTS[Math.floor(Math.random()*TAUNTS.length)];
+    const dir = Math.random() > 0.5 ? 1 : -1;
+    const rot = dir * (4 + Math.random()*5);
+    const overlay = document.createElement('div');
+    overlay.className = 'taunt-overlay';
+    overlay.innerHTML = `<div class="taunt-card" style="--rot:${rot}deg"><div class="taunt-text">${escapeHtml(text)}</div></div>`;
+    document.body.appendChild(overlay);
+    setTimeout(()=>{ overlay.remove(); drainTauntQueue(); }, 2500);
   }
 
   /* ================= Data sync ================= */
@@ -576,6 +666,7 @@
   function renderGame(){
     S.pending = '';
     S.sign = '+';
+    prevAheadSet = null;
     const me = myPlayer();
     const myColor = me ? colorHex(me.color) : '#FFB800';
 
@@ -672,6 +763,7 @@
       setTimeout(()=>myScoreEl.classList.remove('bump'), 260);
     }
     updateOptionsPlayerList();
+    checkOvertakes();
   }
 
   function renderPending(){
@@ -884,6 +976,7 @@
         await refreshAll();
         for(const p of S.players){ await dbSet(kPlayer(S.room, p.id), {...p, score:0}); }
         await refreshAll();
+        prevAheadSet = null;
         updateGameDynamic();
         toast('Nová hra — skóre vynulováno');
         closeOptions();
