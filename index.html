@@ -254,7 +254,7 @@
     backdrop-filter:blur(8px);-webkit-backdrop-filter:blur(8px);
     transform:rotate(var(--rot,-5deg)) scale(.15);opacity:0;
     will-change:transform,opacity,filter;
-    animation:var(--taunt-animation) var(--taunt-duration,2.5s) cubic-bezier(.18,1.35,.28,1) forwards;
+    animation:var(--taunt-animation) var(--taunt-duration,4.5s) cubic-bezier(.18,1.35,.28,1) forwards;
   }
   .taunt-card::before{
     content:'';position:absolute;inset:-115px;z-index:-3;
@@ -447,7 +447,9 @@
     return String(str).replace(/[&<>"']/g, c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
   }
 
-  /* ================= ICQ-style overtake taunts ================= */
+  /* ================= Overtake taunts — shown to the player who got overtaken ================= */
+  let seenTauntIds = new Set();
+
   function checkOvertakes(){
     const me = myPlayer();
     if(!me || S.players.length < 2){ prevAheadSet = null; return; }
@@ -462,7 +464,34 @@
     }
     const newlyOvertaken = [...currentlyAhead].filter(id => !prevAheadSet.has(id));
     prevAheadSet = currentlyAhead;
-    if(newlyOvertaken.length) showTaunt();
+    for(const victimId of newlyOvertaken){
+      sendTauntEvent(victimId);
+    }
+  }
+
+  async function sendTauntEvent(victimId){
+    if(!S.room) return;
+    const eventId = 't_' + Math.random().toString(36).slice(2,10);
+    const key = 'rooms:' + S.room + ':taunts:' + eventId;
+    await dbSet(key, {targetId: victimId, ts: Date.now()});
+    setTimeout(()=>dbDel(key), 12000); // best-effort cleanup
+  }
+
+  async function checkForIncomingTaunts(){
+    if(!S.room || !S.myId) return;
+    const taunts = await dbGet('rooms:' + S.room + ':taunts');
+    if(!taunts) return;
+    const now = Date.now();
+    for(const [eventId, ev] of Object.entries(taunts)){
+      if(!ev) continue;
+      if(!seenTauntIds.has(eventId)){
+        seenTauntIds.add(eventId);
+        if(ev.targetId === S.myId) showTaunt();
+      }
+      if(now - (ev.ts || 0) > 15000){
+        dbDel('rooms:' + S.room + ':taunts:' + eventId);
+      }
+    }
   }
 
   function showTaunt(){
@@ -490,7 +519,7 @@
     overlay.className = 'taunt-overlay';
     overlay.innerHTML = `<div class="taunt-card ${effect}" style="--rot:${rot}deg"><div class="taunt-text">${escapeHtml(text)}</div></div>`;
     document.body.appendChild(overlay);
-    setTimeout(()=>{ overlay.remove(); drainTauntQueue(); }, 2500);
+    setTimeout(()=>{ overlay.remove(); drainTauntQueue(); }, 4500);
   }
 
   /* ================= Data sync ================= */
@@ -519,7 +548,10 @@
       if(document.hidden || !S.room) return;
       await refreshAll();
       if(S.screen === 'lobby') updateLobbyDynamic();
-      if(S.screen === 'game') updateGameDynamic();
+      if(S.screen === 'game'){
+        updateGameDynamic();
+        checkForIncomingTaunts();
+      }
     }, POLL_MS);
   }
   function stopPolling(){ if(pollHandle){ clearInterval(pollHandle); pollHandle = null; } }
@@ -734,6 +766,7 @@
     S.pending = '';
     S.sign = '+';
     prevAheadSet = null;
+    seenTauntIds = new Set();
     const me = myPlayer();
     const myColor = me ? colorHex(me.color) : '#FFB800';
 
