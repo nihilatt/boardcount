@@ -84,9 +84,10 @@
   .player-square{
     background:var(--panel);border-radius:var(--radius-md);
     border-top:4px solid var(--pc,var(--gold));
-    padding:9px 8px 8px;position:relative;overflow:hidden;
-    transition:box-shadow .2s ease, transform .2s ease;
+    padding:9px 8px 8px;position:relative;overflow:hidden;cursor:pointer;
+    transition:box-shadow .2s ease, transform .12s ease;
   }
+  .player-square:active{transform:scale(.96);}
   .player-square.me{box-shadow:0 0 0 2px var(--gold) inset;}
   .player-square .prow{display:flex;align-items:center;gap:5px;margin-bottom:4px;}
   .player-square .dot{width:6px;height:6px;border-radius:50%;background:var(--pc,var(--gold));flex-shrink:0;}
@@ -100,6 +101,9 @@
     transition:transform .3s cubic-bezier(.34,1.56,.64,1);
   }
   .player-square .score.bump{transform:scale(1.18);}
+  .player-square .histhint{
+    position:absolute;bottom:5px;right:7px;font-size:8.5px;color:var(--ink-faint);opacity:.7;
+  }
   .player-square .youtag{
     position:absolute;top:6px;right:7px;font-size:8px;font-weight:700;letter-spacing:.5px;
     color:var(--gold);
@@ -223,6 +227,27 @@
   .opt-player-row .dot{width:9px;height:9px;border-radius:50%;flex-shrink:0;}
   .opt-player-row .nm{flex:1;font-size:13.5px;font-weight:600;}
   .opt-player-row .sc{font-family:var(--font-mono);font-size:13px;color:var(--ink-dim);}
+
+  .hist-summary{display:flex;justify-content:space-between;align-items:baseline;margin-bottom:14px;padding-bottom:12px;border-bottom:1px solid var(--line);}
+  .hist-summary .lbl{font-size:11px;text-transform:uppercase;letter-spacing:.8px;color:var(--ink-faint);font-weight:700;}
+  .hist-summary .tot{font-family:var(--font-mono);font-weight:700;font-size:22px;color:var(--gold);}
+  .hist-list{max-height:44vh;overflow-y:auto;}
+  .hist-row{display:flex;align-items:center;gap:10px;padding:9px 2px;border-bottom:1px solid var(--line);}
+  .hist-row:last-child{border-bottom:none;}
+  .hist-delta{font-family:var(--font-mono);font-weight:700;font-size:15px;min-width:46px;}
+  .hist-delta.pos{color:#2DAF7D;}
+  .hist-delta.neg{color:#E63946;}
+  .hist-time{font-size:11.5px;color:var(--ink-faint);flex:1;}
+  .hist-tag{font-size:10px;color:var(--ink-faint);font-style:italic;margin-left:6px;}
+  .hist-actions{display:flex;gap:6px;flex-shrink:0;}
+  .hist-icon-btn{width:27px;height:27px;border-radius:50%;background:var(--panel-2);border:1px solid var(--line);display:flex;align-items:center;justify-content:center;font-size:12px;color:var(--ink-dim);flex-shrink:0;}
+  .hist-icon-btn:active{transform:scale(.9);}
+  .hist-empty{text-align:center;color:var(--ink-faint);font-size:13px;padding:22px 0;}
+  .hist-edit-input{
+    width:78px;background:var(--panel-2);border:1px solid var(--gold);border-radius:8px;
+    padding:6px 8px;color:var(--ink);font-family:var(--font-mono);font-size:14px;text-align:center;outline:none;
+  }
+  .hist-readonly-note{text-align:center;font-size:11.5px;color:var(--ink-faint);margin-top:12px;}
 
   .toast{
     position:fixed;bottom:calc(18px + env(safe-area-inset-bottom));left:50%;transform:translateX(-50%) translateY(20px);
@@ -384,6 +409,7 @@
   const kIds = room => 'rooms:' + room + ':playerIds';
   const kPlayer = (room,id) => 'rooms:' + room + ':player:' + id;
   const kSettings = room => 'rooms:' + room + ':settings';
+  const kHistory = (room,id) => 'rooms:' + room + ':history:' + id;
   const MAX_PLAYERS = 6;
   const POLL_MS = 1400;
   const ROOM_CHARS = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789'; // no 0/O/1/I to avoid confusion
@@ -589,6 +615,7 @@
       if(S.screen === 'game'){
         updateGameDynamic();
         checkForIncomingTaunts();
+        if(historyModalPlayerId) refreshHistoryModal();
       }
     }, POLL_MS);
   }
@@ -805,6 +832,8 @@
     S.sign = '+';
     prevAheadSet = null;
     seenTauntIds = new Set();
+    historyModalPlayerId = null;
+    historyEditingId = null;
     const me = myPlayer();
     const myColor = me ? colorHex(me.color) : '#FFB800';
 
@@ -881,6 +910,7 @@
         ${p.id===S.myId?'<span class="youtag">TY</span>':''}
         <div class="prow"><span class="dot"></span><span class="name">${escapeHtml(p.nickname)}</span></div>
         <div class="score">${p.score}</div>
+        <span class="histhint">📜</span>
       </div>
     `).join('');
 
@@ -891,6 +921,7 @@
         scoreEl.classList.add('bump');
         setTimeout(()=>scoreEl.classList.remove('bump'), 300);
       }
+      el.addEventListener('click', ()=>openHistoryModal(id));
     });
 
     const me = myPlayer();
@@ -975,9 +1006,171 @@
     try{
       const ok = await dbSet(kPlayer(S.room, updated.id), updated);
       if(!ok) toast('Nepodařilo se uložit skóre, zkontroluj připojení');
+      else await addHistoryEntry(updated.id, delta);
     } finally {
       writingScore = false;
     }
+  }
+
+  /* ================= Per-player entry history ================= */
+  async function addHistoryEntry(playerId, delta, manual){
+    if(!S.room) return;
+    const entryId = 'h_' + Date.now().toString(36) + Math.random().toString(36).slice(2,6);
+    const payload = {delta, ts: Date.now()};
+    if(manual) payload.manual = true;
+    await dbSet(kHistory(S.room, playerId) + ':' + entryId, payload);
+    if(historyModalPlayerId === playerId) refreshHistoryModal();
+  }
+
+  async function applyScoreDelta(playerId, diff){
+    if(!diff) return;
+    const idx = S.players.findIndex(p=>p.id===playerId);
+    if(idx < 0) return;
+    const updated = {...S.players[idx], score: S.players[idx].score + diff};
+    S.players[idx] = updated;
+    updateGameDynamic();
+    writingScore = true;
+    try{ await dbSet(kPlayer(S.room, updated.id), updated); }
+    finally{ writingScore = false; }
+    const totEl = document.querySelector('#historyOverlay .hist-summary .tot');
+    if(totEl) totEl.textContent = updated.score;
+  }
+
+  let historyModalPlayerId = null;
+  let historyEditingId = null;
+  let historyEntries = {};
+
+  function openHistoryModal(playerId){
+    const p = S.players.find(pl=>pl.id===playerId);
+    if(!p) return;
+    closeHistoryModal();
+    historyModalPlayerId = playerId;
+    historyEditingId = null;
+    const div = document.createElement('div');
+    div.className = 'overlay open';
+    div.id = 'historyOverlay';
+    div.style.zIndex = '65';
+    div.innerHTML = `
+      <div class="modal">
+        <h3>${escapeHtml(p.nickname)} — historie <span class="x" id="histClose">✕</span></h3>
+        <div class="hist-summary">
+          <span class="lbl">Aktuální skóre</span>
+          <span class="tot">${p.score}</span>
+        </div>
+        <div class="hist-list" id="histList"></div>
+        ${playerId !== S.myId ? '<div class="hist-readonly-note">Toto je historie jiného hráče — úpravy může dělat jen jeho vlastní zařízení.</div>' : ''}
+      </div>
+    `;
+    document.body.appendChild(div);
+    div.querySelector('#histClose').addEventListener('click', closeHistoryModal);
+    div.addEventListener('click', e=>{ if(e.target === div) closeHistoryModal(); });
+    refreshHistoryModal();
+  }
+
+  function closeHistoryModal(){
+    historyModalPlayerId = null;
+    historyEditingId = null;
+    const el = document.getElementById('historyOverlay');
+    if(el) el.remove();
+  }
+
+  async function refreshHistoryModal(){
+    if(!historyModalPlayerId || !S.room) return;
+    const data = await dbGet(kHistory(S.room, historyModalPlayerId));
+    historyEntries = data || {};
+    renderHistoryList();
+  }
+
+  function renderHistoryList(){
+    const list = document.getElementById('histList');
+    if(!list) return;
+    const entries = Object.entries(historyEntries).sort((a,b)=>(b[1].ts||0)-(a[1].ts||0));
+    if(!entries.length){
+      list.innerHTML = '<div class="hist-empty">Zatím žádné záznamy.</div>';
+      return;
+    }
+    const isMine = historyModalPlayerId === S.myId;
+    list.innerHTML = entries.map(([id, ev])=>{
+      const delta = ev.delta || 0;
+      const sign = delta >= 0 ? '+' : '';
+      const cls = delta >= 0 ? 'pos' : 'neg';
+      const time = new Date(ev.ts || 0).toLocaleTimeString('cs-CZ', {hour:'2-digit', minute:'2-digit'});
+      const tag = ev.manual ? '<span class="hist-tag">ruční úprava</span>' : '';
+      if(isMine && historyEditingId === id){
+        return `
+          <div class="hist-row" data-id="${id}">
+            <input type="number" class="hist-edit-input" id="histEditInput" value="${delta}">
+            <span class="hist-time">${time}</span>
+            <div class="hist-actions">
+              <button class="hist-icon-btn" data-act="save" data-id="${id}">✓</button>
+              <button class="hist-icon-btn" data-act="cancel" data-id="${id}">✕</button>
+            </div>
+          </div>
+        `;
+      }
+      return `
+        <div class="hist-row" data-id="${id}">
+          <span class="hist-delta ${cls}">${sign}${delta}</span>
+          <span class="hist-time">${time}${tag}</span>
+          ${isMine ? `
+            <div class="hist-actions">
+              <button class="hist-icon-btn" data-act="edit" data-id="${id}">✎</button>
+              <button class="hist-icon-btn" data-act="del" data-id="${id}">🗑</button>
+            </div>
+          ` : ''}
+        </div>
+      `;
+    }).join('');
+
+    if(!isMine) return;
+    list.querySelectorAll('[data-act]').forEach(btn=>{
+      const act = btn.dataset.act;
+      const id = btn.dataset.id;
+      btn.addEventListener('click', ()=>{
+        if(act === 'edit'){
+          historyEditingId = id;
+          renderHistoryList();
+          const inp = document.getElementById('histEditInput');
+          if(inp){ inp.focus(); inp.select(); }
+        }
+        if(act === 'cancel'){ historyEditingId = null; renderHistoryList(); }
+        if(act === 'save') saveHistoryEdit(id);
+        if(act === 'del') deleteHistoryEntry(id);
+      });
+    });
+    const inp = document.getElementById('histEditInput');
+    if(inp){
+      inp.addEventListener('keydown', e=>{
+        if(e.key === 'Enter') saveHistoryEdit(historyEditingId);
+        if(e.key === 'Escape'){ historyEditingId = null; renderHistoryList(); }
+      });
+    }
+  }
+
+  async function saveHistoryEdit(id){
+    const inp = document.getElementById('histEditInput');
+    if(!inp) return;
+    const newDelta = parseInt(inp.value, 10);
+    if(isNaN(newDelta)){ historyEditingId = null; renderHistoryList(); return; }
+    const oldDelta = (historyEntries[id] && historyEntries[id].delta) || 0;
+    const diff = newDelta - oldDelta;
+    historyEntries[id] = {...historyEntries[id], delta: newDelta};
+    historyEditingId = null;
+    renderHistoryList();
+    await dbSet(kHistory(S.room, historyModalPlayerId) + ':' + id, historyEntries[id]);
+    await applyScoreDelta(historyModalPlayerId, diff);
+  }
+
+  async function deleteHistoryEntry(id){
+    const ev = historyEntries[id];
+    if(!ev) return;
+    const delta = ev.delta || 0;
+    showConfirm('Smazat tento záznam (' + (delta>=0?'+':'') + delta + ' bodů)?', true, async ()=>{
+      delete historyEntries[id];
+      renderHistoryList();
+      await dbDel(kHistory(S.room, historyModalPlayerId) + ':' + id);
+      await applyScoreDelta(historyModalPlayerId, -delta);
+    });
   }
 
   function startScoreEdit(){
@@ -1009,12 +1202,16 @@
         const val = parseInt(input.value, 10);
         if(!isNaN(val)){
           const me2 = myPlayer();
-          if(me2){
+          if(me2 && val !== me2.score){
+            const diff = val - me2.score;
             const updated2 = {...me2, score: val};
             const idx2 = S.players.findIndex(p=>p.id===me2.id);
             if(idx2 >= 0) S.players[idx2] = updated2;
             writingScore = true;
-            try{ await dbSet(kPlayer(S.room, updated2.id), updated2); }
+            try{
+              await dbSet(kPlayer(S.room, updated2.id), updated2);
+              await addHistoryEntry(updated2.id, diff, true);
+            }
             finally { writingScore = false; }
           }
         }
@@ -1130,13 +1327,17 @@
     });
 
     document.getElementById('newGameBtn').addEventListener('click', ()=>{
-      showConfirm('Vynulovat skóre všech hráčů?', false, async ()=>{
+      showConfirm('Vynulovat skóre všech hráčů? (smaže i historii záznamů)', false, async ()=>{
         await refreshAll();
-        for(const p of S.players){ await dbSet(kPlayer(S.room, p.id), {...p, score:0}); }
+        for(const p of S.players){
+          await dbSet(kPlayer(S.room, p.id), {...p, score:0});
+          await dbDel(kHistory(S.room, p.id));
+        }
         await refreshAll();
         prevAheadSet = null;
+        closeHistoryModal();
         updateGameDynamic();
-        toast('Nová hra — skóre vynulováno');
+        toast('Nová hra — skóre i historie vynulovány');
         closeOptions();
       });
     });
@@ -1144,10 +1345,14 @@
     document.getElementById('wipeBtn').addEventListener('click', ()=>{
       showConfirm('Opravdu smazat celou hru a všechny hráče v místnosti ' + S.room + '?', true, async ()=>{
         await refreshAll();
-        for(const id of S.ids){ await dbDel(kPlayer(S.room, id)); }
+        for(const id of S.ids){
+          await dbDel(kPlayer(S.room, id));
+          await dbDel(kHistory(S.room, id));
+        }
         await dbSet(kIds(S.room), []);
         lsDel('bc_myId');
         S.myId = null;
+        closeHistoryModal();
         closeOptions();
         await refreshAll();
         S.screen = 'lobby';
